@@ -10,7 +10,8 @@ setup(
         'numpy',
         'boto3',
         'filelock',
-        'requests'
+        'requests',
+        'h5py'
     ],
     version='0.1.7',
     author='NeuLab',
