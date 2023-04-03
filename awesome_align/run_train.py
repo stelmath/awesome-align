@@ -38,6 +38,10 @@ from awesome_align.modeling import BertForMaskedLM
 from awesome_align.tokenization_bert import BertTokenizer
 from awesome_align.tokenization_utils import PreTrainedTokenizer
 from awesome_align.modeling_utils import PreTrainedModel
+import h5py
+import pickle
+import io
+import gzip
 
 
 
@@ -50,10 +54,18 @@ class LineByLineTextDataset(Dataset):
         assert os.path.isfile(file_path)
         logger.info("Creating features from dataset file at %s", file_path)
 
-        cache_fn = f'{file_path}.cache' if gold_path is None else f'{file_path}.gold.cache'
+        cache_fn = f'{file_path}.h5' if gold_path is None else f'{file_path}.gold.cache'
         if args.cache_data and os.path.isfile(cache_fn) and not args.overwrite_cache:
-            logger.info("Loading cached data from %s", cache_fn)
-            self.examples = torch.load(cache_fn)
+            if args.cache_data == 'hdf5':
+                logger.info("Loading cached data from %s using HDF5", cache_fn)
+
+                with h5py.File(cache_fn, 'r') as f:
+                    compressed_data = f['examples'][()].tobytes()
+                    with gzip.GzipFile(fileobj=io.BytesIO(compressed_data), mode='rb') as gz:
+                        self.examples = pickle.load(gz)
+            elif args.cache_data == 'torch':
+                logger.info("Loading cached data from %s using torch", cache_fn)
+                self.examples = torch.load(cache_fn)
         else:
             # Loading text data
             self.examples = []
@@ -75,7 +87,7 @@ class LineByLineTextDataset(Dataset):
                         if src.rstrip() == '' or tgt.rstrip() == '':
                             logger.info("Skipping instance %s", line)
                             continue
-                    except:
+                    except Exception as e:
                         logger.info("Skipping instance %s", line)
                         continue
                     sent_src, sent_tgt = src.strip().split(), tgt.strip().split()
@@ -89,10 +101,10 @@ class LineByLineTextDataset(Dataset):
 
                     bpe2word_map_src = []
                     for i, word_list in enumerate(token_src):
-                        bpe2word_map_src += [i for x in word_list]
+                        bpe2word_map_src.extend([i for x in word_list])
                     bpe2word_map_tgt = []
                     for i, word_list in enumerate(token_tgt):
-                        bpe2word_map_tgt += [i for x in word_list]
+                        bpe2word_map_tgt.extend([i for x in word_list])
 
                     if gold_path is not None:
                         try:
@@ -114,8 +126,18 @@ class LineByLineTextDataset(Dataset):
                     else:
                         self.examples.append( (ids_src, ids_tgt, bpe2word_map_src, bpe2word_map_tgt, None) )
 
-            if args.cache_data:
-                logger.info("Saving cached data to %s", cache_fn)
+            if args.cache_data == 'hdf5':
+                logger.info("Saving cached data to %s using HDF5", cache_fn)
+                with h5py.File(cache_fn, 'w') as f:
+                    buffer = io.BytesIO()
+                    with gzip.GzipFile(fileobj=buffer, mode='wb', compresslevel=args.compress_level) as gz:
+                        pickle.dump(self.examples, gz)
+
+                    buffer.seek(0)
+                    compressed_data = buffer.read()
+                    examples = f.create_dataset('examples', data=np.frombuffer(compressed_data, dtype='uint8'))
+            if args.cache_data == 'torch':
+                logger.info("Saving cached data to %s using torch", cache_fn)
                 torch.save(self.examples, cache_fn)
 
     def __len__(self):
@@ -625,8 +647,11 @@ def main():
         "--gold_one_index", action="store_true", help="Whether the gold alignment files are one-indexed"
     )
     # Other parameters
-    parser.add_argument("--cache_data", action="store_true", help='if cache the dataset')
+    parser.add_argument("--cache_data", default='torch', choices=['torch', 'hdf5'], type=str,
+                        help="method for caching the dataset, Options: {'torch', 'hdf5'}")
     parser.add_argument("--align_layer", type=int, default=8, help="layer for alignment extraction")
+    parser.add_argument("--compress_level", type=int, default=4,
+                        help="value from 0 to 9. 0 == no compression and high speed, 9 == maximum compression and low speed")
     parser.add_argument(
         "--extraction", default='softmax', type=str, choices=['softmax', 'entmax'], help='softmax or entmax'
     )
